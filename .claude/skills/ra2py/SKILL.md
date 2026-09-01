@@ -60,6 +60,26 @@ m.save_to_file(out)
 Map().load_from_file(out)   # if THIS doesn't raise, you're actually done
 ```
 
+That still isn't strict enough on its own -- a real bug this project hit (a
+trigger's actions silently truncated on serialize) still parsed fine on
+reload and only showed up as a structural comparison. Use `verify_round_trip`
+after any edit that touches triggers/actions:
+
+```python
+from map import Map, verify_round_trip
+
+m = Map()
+m.load_from_file("some.yrm")
+# ... edits ...
+diff = verify_round_trip(m)   # {} means clean; otherwise {trigger_id: (before, after)}
+```
+
+It saves `m` to a scratch temp file, reloads it into a fresh `Map`, and diffs
+each trigger's action count before vs. after. Because constructing that
+fresh `Map` resets the class-level registries (see the "Only one `Map`
+session" gotcha below), treat `m` as done-with once you've called this --
+don't keep editing it afterward.
+
 ## Building a survival map with waves
 
 This is the documented, working pattern (mirrors `test.py`):
@@ -188,11 +208,67 @@ a single `.yrm` map file and the `.tib` preset(s) that produced it can
 diverge over time (each save is independent) -- if something's missing from
 one, check the other before concluding it doesn't exist.
 
+### Checking map/preset drift directly
+
+Don't eyeball this by hand -- `rules.py` has two functions built from real
+bugs found this way (a hero fully designed in a preset but never wired into
+the live map; a hero's weapon that existed in the preset but was never
+defined in the map, which crashed the game the moment it fired):
+
+```python
+from rules import diff_declared_types, find_missing_dependencies
+
+baseline = RulesBaseline.from_tib_preset(TibPreset("tibet sets/Dota2.tib"))
+control = RulesBaseline.from_tib_preset(TibPreset("tibet sets/NukeArtillery.tib"))  # any unrelated preset
+
+diff_declared_types(m, baseline)
+# {"infantry": {"missing_from_map": [...], "missing_from_baseline": [...],
+#               "stat_diffs": {name: {field: (map_value, baseline_value)}}}, ...}
+
+find_missing_dependencies(m, baseline, control_baseline=control)
+# {name: {field: {"identifier": str, "definition": dict_or_None}}}
+```
+
+`find_missing_dependencies` walks each declared custom type's weapon-ish
+fields (`Primary`/`Secondary`/`ElitePrimary`/`EliteSecondary`/`DeathWeapon`
+by default) and flags any identifier that resolves nowhere -- **always pass
+`control_baseline`** (any preset that isn't specifically about the units
+you're checking): without it there's no way to tell a legitimately-missing
+vanilla weapon (fine, the engine already knows it) from a genuine gap. When
+`definition` comes back non-`None`, the fix is usually just
+`Map.add_entity(Serializable(definition, identifier))`.
+
+`diff_declared_types` treats the *map's own* declared list as ground truth
+for what counts as "custom" per category (a baseline's `[InfantryTypes]`
+etc. mixes vanilla and custom entries together in one list). A stat diff
+doesn't always mean the map is wrong -- e.g. a `BuildTimeMultiplier` of
+`"0,1"` (comma) in a preset vs `"0.1"` (decimal point) in the live map is
+the map having already fixed a locale typo that was never back-ported to
+the preset. Read the diff, don't auto-apply it.
+
+### Why a `.tib` preset and the live ruleset can legitimately disagree
+
+There are (at least) four layers a given unit's effective stats can come
+from, in increasing priority: the base game's own `.mix` archives (vanilla),
+an **installed expansion/mod `.mix`** (e.g. `expandmd01.mix` --
+`strings -a` on it shows the real, currently-loaded custom ruleset, which
+can be newer/dated later than any `.tib`), a `.tib` preset (a design-time
+*snapshot*, edited independently and not automatically kept in sync with
+what's installed), and finally the individual map's own embedded per-map
+overrides (highest priority, a thin delta on top of whatever's installed).
+Confirmed concretely this project: `Dota2.tib` and the actual installed
+`expandmd01.mix` ruleset disagree on a few of `BORISWH`'s `Verses` values.
+When a preset and the live map disagree and neither looks obviously wrong,
+check the installed `.mix` (via `strings -a some.mix | grep -A20
+'^\[SECTION\]'` -- there's no proper MIX parser here, but content is stored
+largely uncompressed/readable) before assuming either the preset or the map
+is the bug.
+
 ## File map
 
 | File | What's in it |
 |---|---|
-| `map.py` | `Map`, `_reset_global_registries()` (called every `Map()` -- see below) |
+| `map.py` | `Map`, `verify_round_trip(m)`, `_reset_global_registries()` (called every `Map()` -- see below) |
 | `mapio.py` | `MapIO` -- the actual line-by-line parser/serializer |
 | `entities.py` | `Structure`/`Unit`/`Infantry` (placed), `Building`/`Vehicle`/`InfantryType` + their `*Types` registries |
 | `logic.py` | `Trigger`, `Event`, `Action`, `Tag`, `Team`, `TaskForce`, `Script`/`ScriptItem` |

@@ -1,3 +1,6 @@
+import os
+import tempfile
+
 from entities import *
 from houses import *
 from basic import *
@@ -345,3 +348,40 @@ class Map():
         data += self.digest.serialize()
 
         return data
+
+
+def verify_round_trip(m: 'Map'):
+    """
+        Save `m` to a scratch file, reload it fresh, and compare every
+        trigger's action count before vs. after. Returns a dict of
+        {trigger_identifier: (before_count, after_count)} for any trigger
+        whose action count changed -- empty means the round trip was clean.
+
+        This is stricter than just checking that save/reload doesn't raise:
+        a real bug this project hit (a trigger's actions silently truncated
+        on serialize) still parsed fine on reload and was only caught by
+        this kind of structural comparison. Run this after any edit that
+        touches triggers/actions, before trusting a save.
+
+        Note: constructing the reloaded Map() resets several class-level ID
+        registries (see _reset_global_registries), so `m` itself should be
+        treated as done-with by the time this returns -- don't keep editing
+        it afterward.
+    """
+    before = {t.get_identifier(): len(t.actions) for t in m.get_triggers()}
+
+    fd, tmp_path = tempfile.mkstemp(suffix=".yrm")
+    os.close(fd)
+    try:
+        m.save_to_file(tmp_path)
+        reloaded = Map()
+        reloaded.load_from_file(tmp_path)
+    finally:
+        os.remove(tmp_path)
+
+    after = {t.get_identifier(): len(t.actions) for t in reloaded.get_triggers()}
+    return {
+        identifier: (before.get(identifier), after.get(identifier))
+        for identifier in set(before) | set(after)
+        if before.get(identifier) != after.get(identifier)
+    }
