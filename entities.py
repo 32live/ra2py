@@ -171,6 +171,21 @@ class Building():
         Building.index += 1
         Building.buildings.append(self)
 
+    @classmethod
+    def from_base(cls, baseline, base_identifier, new_identifier, **overrides):
+        """
+            Derive a new building type from an existing one (vanilla or
+            another custom type already in `baseline`): start from
+            base_identifier's complete stat block and apply only the given
+            overrides, leaving every other field exactly as the base has it.
+
+            baseline: a rules.RulesBaseline (e.g. RulesBaseline.from_tib_preset(...))
+        """
+        attributes = baseline.get_attributes(base_identifier)
+        for key, value in overrides.items():
+            attributes[key] = str(value)
+        return cls(new_identifier, attributes)
+
     def get_buildings():
         return Building.buildings
 
@@ -194,7 +209,7 @@ class Building():
     def set_owners(self, owners: list):
         self.attributes["Owner"] = owners
     def set_sight(self, sight: int):
-        self.attributes["Owner"] = owner
+        self.attributes["Sight"] = sight
     def set_points(self, points: int):
         self.attributes["Points"] = points
     def set_spysat(self, state: bool):
@@ -279,7 +294,8 @@ class BuildingTypes():
             Only necessary if declaring a new building type.
             If an existing type is modified, use define_type()
         """
-        self.declarations.append(name)
+        if name not in self.declarations:
+            self.declarations.append(name)
 
     def define_type(self, building: Building):
         """
@@ -309,6 +325,274 @@ class BuildingTypes():
         # if self.definitions:
             # for definition in self.definitions:
                 # string += definition.serialize()
+
+        return string + '\n'
+
+
+class Vehicle():
+    """
+        Custom vehicle (unit) type definition, analogous to Building for
+        structures. Declared in [VehicleTypes] and defined in its own
+        [<identifier>] section, e.g. a modded tank.
+    """
+    index = 200
+    vehicles = []
+
+    def __init__(self, identifier, attributes):
+        self.attributes = attributes if attributes is not None else {}
+        self.identifier = identifier
+        self.index = Vehicle.index
+        Vehicle.index += 1
+        Vehicle.vehicles.append(self)
+
+    @classmethod
+    def from_base(cls, baseline, base_identifier, new_identifier, **overrides):
+        """
+            Derive a new vehicle type from an existing one (vanilla or
+            another custom type already in `baseline`): start from
+            base_identifier's complete stat block and apply only the given
+            overrides, leaving every other field exactly as the base has it.
+
+            baseline: a rules.RulesBaseline (e.g. RulesBaseline.from_tib_preset(...))
+
+            Example: a Rhino Tank with more health and stronger firepower,
+            everything else left at its default:
+                Vehicle.from_base(baseline, "MTNK", "SUPRHINO", Strength=1000, Primary="APOCSplashBIG")
+        """
+        attributes = baseline.get_attributes(base_identifier)
+        for key, value in overrides.items():
+            attributes[key] = str(value)
+        return cls(new_identifier, attributes)
+
+    def get_vehicles():
+        return Vehicle.vehicles
+
+    def set_index(self, index: int):
+        self.index = index
+    def get_index(self):
+        return self.index
+    def get_identifier(self):
+        return self.identifier
+    def set_name(self, name: str):
+        self.attributes["Name"] = name
+    def set_armor(self, armor):
+        self.attributes["Armor"] = armor
+    def set_image(self, image: str):
+        self.attributes["Image"] = image
+    def set_owners(self, owners: list):
+        self.attributes["Owner"] = owners
+    def set_sight(self, sight: int):
+        self.attributes["Sight"] = sight
+    def set_points(self, points: int):
+        self.attributes["Points"] = points
+    def set_cost(self, cost: int):
+        self.attributes["Cost"] = cost
+    def set_speed(self, speed: int):
+        self.attributes["Speed"] = speed
+    def set_strength(self, strength: int):
+        self.attributes["Strength"] = strength
+    def set_tech_level(self, tech_level: int):
+        self.attributes["TechLevel"] = tech_level
+    def set_crewed(self, state: bool):
+        self.attributes["Crewed"] = state
+    def set_explosion(self, explosion: str):
+        self.attributes["Explosion"] = explosion
+    def set_primary(self, weapon: str):
+        self.attributes["Primary"] = weapon
+    def set_secondary(self, weapon: str):
+        self.attributes["Secondary"] = weapon
+    def set_ui_name(self, ui_name: str):
+        self.attributes["UIName"] = ui_name
+    def set_prerequisites(self, prerequisites: list):
+        self.attributes["Prerequisites"] = prerequisites
+    def set_locomotor(self, locomotor: str):
+        self.attributes["Locomotor"] = locomotor
+
+    def get_value(self, key):
+        return self.attributes[key]
+
+    def __str__(self):
+        return self.identifier
+
+    def serialize(self):
+        string = "[" + self.identifier + "]\n"
+
+        for (key, value) in self.attributes.items():
+            string += "{}={}\n".format(key, str(value).replace("False", "no").replace("True", "yes"))
+
+        return string
+
+
+class VehicleTypes():
+    """
+        Registry of custom vehicle type declarations/definitions, analogous
+        to BuildingTypes.
+    """
+    def __init__(self):
+        self.definitions = {}
+        self.declarations = []
+
+    def declare_type(self, name):
+        """
+            Only necessary if declaring a new vehicle type.
+            If an existing type is modified, use define_type()
+        """
+        if name not in self.declarations:
+            self.declarations.append(name)
+
+    def define_type(self, vehicle: Vehicle):
+        """
+            Add a definition for a new type or an existing type.
+        """
+        self.definitions[vehicle.get_identifier()] = vehicle
+
+    def is_vehicle(self, name):
+        return name in self.declarations
+
+    def get_definitions(self):
+        return self.definitions
+
+    def serialize(self):
+        string = ""
+
+        if self.declarations:
+            # This counter starts with all standard vehicles, therefore
+            # its initially 200 (matches real map exports).
+            id_counter = 200
+            string += "[VehicleTypes]\n"
+            for vehicle_key in self.definitions:
+                string += "{}={}\n".format(id_counter, self.definitions[vehicle_key])
+                id_counter += 1
+
+        return string + '\n'
+
+
+class InfantryType():
+    """
+        Custom infantry type definition, analogous to Building/Vehicle.
+        Declared in [InfantryTypes] and defined in its own [<identifier>]
+        section. Identifiers seen in the wild can contain spaces (e.g. a
+        renamed "Shock Trooper 2"), unlike typical 4-8 char building/vehicle
+        codes.
+    """
+    index = 66
+    infantry_types = []
+
+    def __init__(self, identifier, attributes):
+        self.attributes = attributes if attributes is not None else {}
+        self.identifier = identifier
+        self.index = InfantryType.index
+        InfantryType.index += 1
+        InfantryType.infantry_types.append(self)
+
+    @classmethod
+    def from_base(cls, baseline, base_identifier, new_identifier, **overrides):
+        """
+            Derive a new infantry type from an existing one (vanilla or
+            another custom type already in `baseline`): start from
+            base_identifier's complete stat block and apply only the given
+            overrides, leaving every other field exactly as the base has it.
+
+            baseline: a rules.RulesBaseline (e.g. RulesBaseline.from_tib_preset(...))
+        """
+        attributes = baseline.get_attributes(base_identifier)
+        for key, value in overrides.items():
+            attributes[key] = str(value)
+        return cls(new_identifier, attributes)
+
+    def get_infantry_types():
+        return InfantryType.infantry_types
+
+    def set_index(self, index: int):
+        self.index = index
+    def get_index(self):
+        return self.index
+    def get_identifier(self):
+        return self.identifier
+    def set_name(self, name: str):
+        self.attributes["Name"] = name
+    def set_armor(self, armor):
+        self.attributes["Armor"] = armor
+    def set_image(self, image: str):
+        self.attributes["Image"] = image
+    def set_owners(self, owners: list):
+        self.attributes["Owner"] = owners
+    def set_sight(self, sight: int):
+        self.attributes["Sight"] = sight
+    def set_points(self, points: int):
+        self.attributes["Points"] = points
+    def set_cost(self, cost: int):
+        self.attributes["Cost"] = cost
+    def set_speed(self, speed: int):
+        self.attributes["Speed"] = speed
+    def set_strength(self, strength: int):
+        self.attributes["Strength"] = strength
+    def set_tech_level(self, tech_level: int):
+        self.attributes["TechLevel"] = tech_level
+    def set_primary(self, weapon: str):
+        self.attributes["Primary"] = weapon
+    def set_secondary(self, weapon: str):
+        self.attributes["Secondary"] = weapon
+    def set_ui_name(self, ui_name: str):
+        self.attributes["UIName"] = ui_name
+    def set_prerequisites(self, prerequisites: list):
+        self.attributes["Prerequisites"] = prerequisites
+
+    def get_value(self, key):
+        return self.attributes[key]
+
+    def __str__(self):
+        return self.identifier
+
+    def serialize(self):
+        string = "[" + self.identifier + "]\n"
+
+        for (key, value) in self.attributes.items():
+            string += "{}={}\n".format(key, str(value).replace("False", "no").replace("True", "yes"))
+
+        return string
+
+
+class InfantryTypes():
+    """
+        Registry of custom infantry type declarations/definitions,
+        analogous to BuildingTypes/VehicleTypes.
+    """
+    def __init__(self):
+        self.definitions = {}
+        self.declarations = []
+
+    def declare_type(self, name):
+        """
+            Only necessary if declaring a new infantry type.
+            If an existing type is modified, use define_type()
+        """
+        if name not in self.declarations:
+            self.declarations.append(name)
+
+    def define_type(self, infantry_type: InfantryType):
+        """
+            Add a definition for a new type or an existing type.
+        """
+        self.definitions[infantry_type.get_identifier()] = infantry_type
+
+    def is_infantry(self, name):
+        return name in self.declarations
+
+    def get_definitions(self):
+        return self.definitions
+
+    def serialize(self):
+        string = ""
+
+        if self.declarations:
+            # This counter starts with all standard infantry, therefore
+            # its initially 66 (matches real map exports).
+            id_counter = 66
+            string += "[InfantryTypes]\n"
+            for infantry_key in self.definitions:
+                string += "{}={}\n".format(id_counter, self.definitions[infantry_key])
+                id_counter += 1
 
         return string + '\n'
 

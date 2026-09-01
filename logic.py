@@ -20,7 +20,9 @@ class Event():
         return Event({0:9, 1:0, 2:house})
 
     def __str__(self):
-        return "{},{},{}".format(*self.attributes.values())
+        # Some event types (e.g. 60/61) carry a 4th field, so don't
+        # hardcode the field count -- format() silently drops extra args.
+        return ",".join(str(v) for v in self.attributes.values())
 
 
 class Trigger(BaseLogic):
@@ -103,7 +105,8 @@ class Trigger(BaseLogic):
                                                     int(self.attributes["Disabled"]),
                                                     int(self.attributes["Easy"]),
                                                     int(self.attributes["Medium"]),
-                                                    int(self.attributes["Hard"]), 0)
+                                                    int(self.attributes["Hard"]),
+                                                    self.attributes.get("last_digit", 0))
 
 class Action():
     #(numactions,)107(reinfchrono),1,team,0,0,0,0,Waypoint-> alphabetical
@@ -261,9 +264,14 @@ class Script(BaseLogic):
         self.actions = []
         Script.scripts.append(self)
 
-    def get_list_string():
+    def get_list_string(scripts):
+        """
+            scripts: the owning Map's own scripts (its .scripts.values()),
+            not Script.scripts -- the latter is a class-wide registry shared
+            by every Script ever created in this process, not just this map.
+        """
         string = "[ScriptTypes]\n"
-        for c, tf in enumerate(Script.scripts):
+        for c, tf in enumerate(scripts):
             string += "{}={}\n".format(c, tf)
         return string + '\n'
     def set_name(self, name: str):
@@ -305,9 +313,15 @@ class TaskForce(BaseLogic):
         self.units = []
         TaskForce.task_forces.append(self)
 
-    def get_list_string():
+    def get_list_string(task_forces):
+        """
+            task_forces: the owning Map's own taskforces (its .taskforces),
+            not TaskForce.task_forces -- the latter is a class-wide registry
+            shared by every TaskForce ever created in this process, not just
+            this map.
+        """
         string = "[TaskForces]\n"
-        for c, tf in enumerate(TaskForce.task_forces):
+        for c, tf in enumerate(task_forces):
             string += "{}={}\n".format(c, tf)
         return string + '\n'
 
@@ -390,9 +404,14 @@ class Team(BaseLogic):
         te.set_identifier(identifier)
         Team.id_counter -= 1
         return te
-    def get_list_string():
+    def get_list_string(teams):
+        """
+            teams: the owning Map's own teams (its .teams), not Team.teams
+            -- the latter is a class-wide registry shared by every Team
+            ever created in this process, not just this map.
+        """
         string = "[TeamTypes]\n"
-        for c, t in enumerate(Team.teams):
+        for c, t in enumerate(teams):
             string += "{}={}\n".format(c, t)
         return string + '\n'
 

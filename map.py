@@ -4,10 +4,54 @@ from basic import *
 from logic import *
 from mapio import MapIO
 
+
+def _reset_global_registries():
+    """
+        Trigger/Tag/Script/TaskForce/Team/Waypoint/Building/Vehicle/
+        InfantryType/House all track their auto-assigned IDs and/or their
+        "every instance ever created" list on the class itself rather than
+        on a Map, because objects like a Wave's Team/Trigger/Tag are built
+        before there's a Map to attach them to. That means none of it
+        resets on its own -- without this, loading or building more than
+        one Map in the same process leaks IDs and objects between them
+        (e.g. the second map's serialized output could include structures
+        left over from the first, or garbled duplicate IDs).
+
+        Called at the start of every Map() -- fine as long as maps are
+        built/loaded one at a time, which is the common case; it does NOT
+        support holding two Map objects open and editing both at once.
+    """
+    BaseLogic.id_counter = 1000000
+    for cls in (Trigger, Tag, Script, TaskForce, Team):
+        cls.id_counter = 1000000
+
+    Waypoint.id_counter = 1
+    Waypoint.waypoints = []
+
+    Building.index = 407
+    Building.buildings = []
+
+    Vehicle.index = 200
+    Vehicle.vehicles = []
+
+    InfantryType.index = 66
+    InfantryType.infantry_types = []
+
+    Tag.tags = []
+    Team.teams = []
+    TaskForce.task_forces = []
+    Script.scripts = []
+
+    House.houses = {}
+
+
 class Map():
     def __init__(self):
+        _reset_global_registries()
         self.header = Header()
         self.building_types = BuildingTypes()
+        self.vehicle_types = VehicleTypes()
+        self.infantry_types = InfantryTypes()
         self.preview = Preview()
         self.preview_pack = PreviewPack()
         self.iso_map_pack = Serializable()
@@ -30,7 +74,13 @@ class Map():
         self.overlay_data_pack = Serializable()
         self.overlay_pack = Serializable()
         self.special_flags = SpecialFlags()
-        self.ai_trigger_types = Serializable()
+        # None (not an empty Serializable) so serialize() can tell "never
+        # set" apart from "parsed/set to an actually-empty block" -- a
+        # generic Serializable() is truthy either way, which previously
+        # caused an always-emitted, unparseable bare "[]" section on any
+        # map that never had an [AITriggerTypesEnable] section to begin
+        # with (e.g. any SurvivalMap built from empty.yrm).
+        self.ai_trigger_types = None
         self.tags = []
         self.entities = []
         self.waypoints = {}
@@ -43,6 +93,22 @@ class Map():
         self.mapio.write_mapfile(path)
     def get_building_types(self):
         return self.building_types
+    def get_vehicle_types(self):
+        return self.vehicle_types
+    def get_infantry_types(self):
+        return self.infantry_types
+    def add_vehicle_type(self, vehicle: Vehicle):
+        """ Declare and define a custom vehicle type in one call (e.g. Vehicle.from_base(...)) """
+        self.vehicle_types.declare_type(vehicle.get_identifier())
+        self.vehicle_types.define_type(vehicle)
+    def add_building_type(self, building: Building):
+        """ Declare and define a custom building type in one call """
+        self.building_types.declare_type(building.get_identifier())
+        self.building_types.define_type(building)
+    def add_infantry_type(self, infantry_type: InfantryType):
+        """ Declare and define a custom infantry type in one call """
+        self.infantry_types.declare_type(infantry_type.get_identifier())
+        self.infantry_types.define_type(infantry_type)
     def get_entities(self):
         return self.entities
     def get_structures(self):
@@ -158,6 +224,22 @@ class Map():
             data += building.serialize()
             data += '\n'
 
+        # Vehicle types (declarations only)
+        data += self.vehicle_types.serialize()
+
+        # Serialize custom / modified vehicles
+        for _, vehicle in self.vehicle_types.definitions.items():
+            data += vehicle.serialize()
+            data += '\n'
+
+        # Infantry types (declarations only)
+        data += self.infantry_types.serialize()
+
+        # Serialize custom / modified infantry types
+        for _, infantry_type in self.infantry_types.definitions.items():
+            data += infantry_type.serialize()
+            data += '\n'
+
         # TODO building definitions here -> also modified standard buildings
         # TODO scripts, actions, buildings
         for ent in self.entities:
@@ -220,7 +302,7 @@ class Map():
 
         # ScriptTypes
         if self.scripts:
-            data += Script.get_list_string()
+            data += Script.get_list_string(self.scripts.values())
 
         data += self.special_flags.serialize()
 
@@ -251,9 +333,9 @@ class Map():
             data += trigger.serialize() + '\n'
         data += '\n'
 
-        data += TaskForce.get_list_string()
+        data += TaskForce.get_list_string(self.taskforces)
 
-        data += Team.get_list_string()
+        data += Team.get_list_string(self.teams)
         
         data += "[Waypoints]\n"
         for key, value in self.waypoints.items():

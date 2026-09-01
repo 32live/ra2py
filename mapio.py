@@ -37,7 +37,13 @@ class MapIO():
 
     def read_mapfile(self, path):
 
-        with open(path, 'r') as input_file:
+        # Map files are legacy Windows text (FinalAlert2 writes whatever the
+        # system ANSI codepage was), not necessarily UTF-8 -- e.g. accented
+        # author names/descriptions can contain arbitrary high bytes that
+        # aren't valid UTF-8. latin-1 maps every byte 0-255 to a unique code
+        # point (and back), so it never fails to decode and round-trips the
+        # original bytes exactly, unlike an explicit Windows codepage.
+        with open(path, 'r', encoding='latin-1') as input_file:
             self.data = input_file.readlines()
 
         self.line = self.data[0]
@@ -45,11 +51,32 @@ class MapIO():
 
         self.index = 0
 
+        # [BuildingTypes]/[VehicleTypes] can appear anywhere in the file
+        # relative to the actual type definitions they declare (export order
+        # is not guaranteed), so declare them upfront in one pass. Otherwise
+        # a definition block parsed before its declaring section would be
+        # missed and fall back to a generic, untyped entity.
+        self.prescan_type_declarations()
+
         # Initial parsing
         print("initial parsing...")
         while(self.next_line()):
-            if self.line[0] == '[':
+            while self.line[0] == '[':
+                # parse_attributes()/parse_dict()/parse_array() (used by most
+                # entity handlers) stop as soon as they see the line starting
+                # the NEXT section, but leave that line unconsumed rather than
+                # dispatching it -- so after parse_entity() returns, self.line
+                # can already be sitting on a fresh, undispatched section
+                # header. Dispatch it directly instead of calling next_line()
+                # again, which would silently skip that header (and its
+                # entire section) whenever it immediately follows one of
+                # these entity types.
+                pre_index = self.index
                 self.parse_entity()
+                if self.index == pre_index:
+                    # This handler (e.g. "TeamTypes": pass) didn't advance at
+                    # all, so fall through to next_line() below as before.
+                    break
 
         # Postprocessing
         print("link teams and taskforces...")
@@ -117,13 +144,26 @@ class MapIO():
         for struct in self.map_obj.get_structures():
             # Link structure
             if struct.get_tag() != 'None':
-                struct.set_tag(self.tag_dict[str(struct.get_tag())])
+                key = str(struct.get_tag())
+                if key in self.tag_dict:
+                    struct.set_tag(self.tag_dict[key])
+                else:
+                    # Dangling reference (e.g. the tag/trigger it once
+                    # pointed to was deleted in the map editor without
+                    # clearing this field) -- leave the bare, unlinked Tag
+                    # in place rather than crashing; it still round-trips
+                    # correctly since it still knows its own identifier.
+                    print("WARNING: structure references unknown tag " + key)
 
         print("tag units...")
         for unit in self.map_obj.get_units():
             # Link unit
             if unit.get_tag() != 'None':
-                unit.set_tag(self.tag_dict[str(unit.get_tag().get_identifier())])
+                key = str(unit.get_tag())
+                if key in self.tag_dict:
+                    unit.set_tag(self.tag_dict[key])
+                else:
+                    print("WARNING: unit references unknown tag " + key)
 
         """
             Scripts are logic entites containing a list of actions
@@ -155,10 +195,43 @@ class MapIO():
 
         return self.map_obj
 
+    def prescan_type_declarations(self):
+        """
+            Scan the whole file once for [BuildingTypes]/[VehicleTypes]/
+            [InfantryTypes] and declare their entries immediately,
+            independent of where those sections happen to sit relative to
+            the definition blocks they declare (both orderings show up in
+            real exports). declare_type() is idempotent, so the normal pass
+            over these sections later on is still safe.
+        """
+        targets = {
+            "[BuildingTypes]": self.map_obj.building_types,
+            "[VehicleTypes]": self.map_obj.vehicle_types,
+            "[InfantryTypes]": self.map_obj.infantry_types,
+        }
+        i = 0
+        n = len(self.data)
+        while i < n:
+            header = self.data[i].rstrip('\r\n')
+            registry = targets.get(header)
+            i += 1
+            if registry is None:
+                continue
+            while i < n:
+                entry = self.data[i].rstrip('\r\n')
+                if not entry or entry[0] == '[':
+                    break
+                _, name = entry.split('=', 1)
+                registry.declare_type(name)
+                i += 1
 
     def next_line(self):
 
         if self.index == self.eof:
+            # Sentinel so any in-progress block-scanning loop (which checks
+            # line[0] against '\n'/'[') terminates instead of re-reading
+            # the last line forever.
+            self.line = '\n'
             return False
 
         self.line = self.data[self.index]
@@ -213,12 +286,11 @@ class MapIO():
 
         while self.line[0] != '\n' and self.line[0] != '[':
 
-            # NOTE: initially assumed only x and y coordinates, that's why z is in the middle now
+            # Encoded as X*1000+Y (Y zero-padded to 3 digits), not a fixed
+            # digit-width split -- breaks for X>=100 or Y>=100 otherwise.
             _id, coords = self.line.split('=')
-            x = coords[0:2]
-            z = coords[2]
-            y = coords[3:5]
-            waypoints[_id] = Waypoint(int(x), int(y), int(z), int(_id))
+            x, y = divmod(int(coords), 1000)
+            waypoints[_id] = Waypoint(x, y, 0, int(_id))
 
             self.next_line()
 
@@ -237,11 +309,38 @@ class MapIO():
             print("declared building type: " + attributes[key])
             self.map_obj.building_types.declare_type(attributes[key])
 
+    def parse_vehicle_types(self):
+        attributes = self.parse_attributes()
+
+        for key in attributes:
+            print("declared vehicle type: " + attributes[key])
+            self.map_obj.vehicle_types.declare_type(attributes[key])
+
+    def parse_infantry_types(self):
+        attributes = self.parse_attributes()
+
+        for key in attributes:
+            print("declared infantry type: " + attributes[key])
+            self.map_obj.infantry_types.declare_type(attributes[key])
+
 
     def parse_header(self):
-        map_format = self.parse_attributes(4, int)
+        # Width/Height/StartX/StartY are always present, but campaign maps
+        # can carry extra fields before the waypoints (e.g. "FreeUnit=none"),
+        # so read attributes generically until the first "WaypointN" line
+        # instead of assuming a fixed count of 4.
+        self.next_line()
+        attributes = {}
+        while self.line[0] != '\n' and self.line[0] != '[' and not self.line.startswith('Waypoint'):
+            key, value = self.parse_attribute()
+            try:
+                value = int(value)
+            except ValueError:
+                pass
+            attributes[key] = value
+            self.next_line()
 
-        header = Header(map_format)
+        header = Header(attributes)
 
         header.set_player_start_A(self.parse_waypoint_player())
         header.set_player_start_B(self.parse_waypoint_player())
@@ -252,8 +351,17 @@ class MapIO():
         header.set_player_start_G(self.parse_waypoint_player())
         header.set_player_start_H(self.parse_waypoint_player())
 
-        key, val = self.parse_attribute(int)
-        header.add_attribute(key, val)
+        # Trailing attributes after the 8 waypoints -- usually just
+        # NumberStartingPoints, but campaign maps can add more (e.g.
+        # SlavesNumber), so read generically rather than exactly one.
+        while self.line[0] != '\n' and self.line[0] != '[':
+            key, value = self.parse_attribute()
+            try:
+                value = int(value)
+            except ValueError:
+                pass
+            header.add_attribute(key, value)
+            self.next_line()
 
         return header
 
@@ -262,7 +370,7 @@ class MapIO():
         # tr = Trigger()
         # tr.set_identifier = int(id)
         tr = Trigger.create_by_id(int(id), {})
-        attributes = values.split(',')
+        attributes = values.rstrip('\r\n').split(',')
         tr.set_owner(House.get_house(attributes[0]))
         tr.add_attribute("attached_trigger", attributes[1]) # TODO reference vs. ID?
         tr.set_name(attributes[2])
@@ -270,7 +378,7 @@ class MapIO():
         tr.set_difficulty_easy(attributes[4] == "1")
         tr.set_difficulty_medium(attributes[5] == "1")
         tr.set_difficulty_hard(attributes[6] == "1")
-        tr.add_attribute("last_digit", 0)
+        tr.add_attribute("last_digit", int(attributes[7]))
         return tr
 
     def parse_triggers(self):
@@ -294,16 +402,29 @@ class MapIO():
         self.next_line()
         while self.line[0] != '\n' and self.line[0] != '[':
             id, values = self.line.split('=')
-            values = values.split(',')
+            values = values.rstrip('\r\n').split(',')
             amount = int(values[0])
             trigger_events = []
-            for i in range(0, amount):
-                event = Event({
-                        # Start at +1 since 0 is amount
-                        0: int(values[i*3 + 1]),
-                        1: int(values[i*3 + 2]),
-                        2: int(values[i*3 + 3])
-                    })
+            i = 1
+            for _ in range(0, amount):
+                # Most events are (Type, P1, P2). P1/P2 aren't always numeric
+                # (some event types stash an object-type string in there, e.g.
+                # type 48 = "48,0,WINI"), so keep them as raw tokens rather
+                # than forcing int(). Only Type needs to be an int, to decide
+                # where the next event starts.
+                attributes = {
+                        0: int(values[i]),
+                        1: values[i + 1],
+                        2: values[i + 2],
+                    }
+                i += 3
+                if i < len(values):
+                    try:
+                        int(values[i])
+                    except ValueError:
+                        attributes[3] = values[i]
+                        i += 1
+                event = Event(attributes)
                 trigger_events.append(event)
             # tr = filter(lambda x: x.get_identifier() == id, self.map_obj.get_triggers())
             # tr = (x for x in self.map_obj.get_triggers() if x.get_identifier() == id)
@@ -373,7 +494,10 @@ class MapIO():
         for string in array:
             raw_attributes = string.split(',')
             tag = Tag()
-            tag.set_identifier(int(raw_attributes[8]))
+            if raw_attributes[8] != 'None':
+                tag.set_identifier(int(raw_attributes[8]))
+            else:
+                tag = 'None'
             self.map_obj.add_infantry(Infantry({
                     "House": House.get_house(raw_attributes[0]),
                     "Identifier": raw_attributes[1],
@@ -427,7 +551,10 @@ class MapIO():
         for string in array:
             attributes = string.split(',')
             tag = Tag()
-            tag.set_identifier(attributes[7])
+            if attributes[7] != 'None':
+                tag.set_identifier(int(attributes[7]))
+            else:
+                tag = 'None'
             self.map_obj.add_unit(Unit({
                 "House": attributes[0],
                 "Identifier": attributes[1],
@@ -472,10 +599,22 @@ class MapIO():
             self.map_obj.set_preview_pack(PreviewPack(array))
         elif name == "BuildingTypes":
             self.parse_building_types()
+        elif name == "VehicleTypes":
+            self.parse_vehicle_types()
+        elif name == "InfantryTypes":
+            self.parse_infantry_types()
         elif self.map_obj.building_types.is_building(name):
             attributes = self.parse_attributes()
             building = Building(name, attributes)
             self.map_obj.building_types.define_type(building)
+        elif self.map_obj.vehicle_types.is_vehicle(name):
+            attributes = self.parse_attributes()
+            vehicle = Vehicle(name, attributes)
+            self.map_obj.vehicle_types.define_type(vehicle)
+        elif self.map_obj.infantry_types.is_infantry(name):
+            attributes = self.parse_attributes()
+            infantry_type = InfantryType(name, attributes)
+            self.map_obj.infantry_types.define_type(infantry_type)
         elif name == "Header":
             header = self.parse_header()
             self.map_obj.set_header(header)
@@ -539,5 +678,5 @@ class MapIO():
             # self.map_obj.add_entity(Serializable(attributes, name))
 
     def write_mapfile(self, path):
-        with open(path, 'w+') as out:
+        with open(path, 'w+', encoding='latin-1') as out:
             out.write(self.map_obj.serialize())

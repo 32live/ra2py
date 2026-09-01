@@ -39,13 +39,13 @@ class Basic(Serializable):
     def set_percent(self, percent: int):
         self.attributes["Percent"] = percent
     def set_game_mode(self, mode: str):
-        self.attributes["GameMode"] = name
+        self.attributes["GameMode"] = mode
     def set_home_cell(self, cell: int):
-        self.attributes["HomeCell"] = name
+        self.attributes["HomeCell"] = cell
     def set_alt_home_cell(self, cell: int):
-        self.attributes["AltHomeCell"] = name
+        self.attributes["AltHomeCell"] = cell
     def set_init_time(self, time: int):
-        self.attributes["InitTime"] = name
+        self.attributes["InitTime"] = time
     def set_official(self, official: bool):
         self.attributes["Official"] = official
     def set_end_of_game(self, state: bool):
@@ -184,7 +184,8 @@ class Waypoint():
                 return w
         print("WARNING: waypoint '" + letter + "' does not exist yet!")
     def get_encoded(self):
-        return "{}{}{}".format(self.x, self.z, self.y)
+        """ Encoded as X*1000+Y, with Y zero-padded to 3 digits """
+        return "{}{:03d}".format(self.x, self.y)
     def get_letter(self):
         """
             Returns the alphabetical representation of ID
