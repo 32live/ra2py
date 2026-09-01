@@ -456,7 +456,7 @@ class MapIO():
         self.next_line()
         while self.line[0] != '\n' and self.line[0] != '[':
             id, values = self.line.split('=')
-            values = values.split(',')
+            values = values.rstrip('\r\n').split(',')
             amount = int(values[0])
             trigger_actions = []
             for i in range(0, amount):

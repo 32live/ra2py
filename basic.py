@@ -188,11 +188,17 @@ class Waypoint():
         return "{}{:03d}".format(self.x, self.y)
     def get_letter(self):
         """
-            Returns the alphabetical representation of ID
+            Returns the alphabetical representation of ID: A-Z for 1-26,
+            then AA, AB, ... (bijective base-26, same scheme spreadsheets
+            use for column names) for higher ids -- confirmed against real
+            map data where waypoint 28 is written as "AB".
         """
-        if self.id > 26:
-            print("WARNING: Waypoint ID out of range: " + str(self.id))
-        return chr(64 + self.id)
+        n = self.id
+        letters = ""
+        while n > 0:
+            n, r = divmod(n - 1, 26)
+            letters = chr(65 + r) + letters
+        return letters
 
     def get_player_start(self):
         return "{},{}".format(self.x, self.y)
