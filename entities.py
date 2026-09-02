@@ -178,12 +178,18 @@ class Building():
             another custom type already in `baseline`): start from
             base_identifier's complete stat block and apply only the given
             overrides, leaving every other field exactly as the base has it.
+            An override value of None deletes that field entirely instead
+            of setting it -- useful when the base has a field that
+            shouldn't carry over at all (not even as an empty/off value).
 
             baseline: a rules.RulesBaseline (e.g. RulesBaseline.from_tib_preset(...))
         """
         attributes = baseline.get_attributes(base_identifier)
         for key, value in overrides.items():
-            attributes[key] = str(value)
+            if value is None:
+                attributes.pop(key, None)
+            else:
+                attributes[key] = str(value)
         return cls(new_identifier, attributes)
 
     def get_buildings():
@@ -352,6 +358,9 @@ class Vehicle():
             another custom type already in `baseline`): start from
             base_identifier's complete stat block and apply only the given
             overrides, leaving every other field exactly as the base has it.
+            An override value of None deletes that field entirely instead
+            of setting it -- useful when the base has a field that
+            shouldn't carry over at all (not even as an empty/off value).
 
             baseline: a rules.RulesBaseline (e.g. RulesBaseline.from_tib_preset(...))
 
@@ -361,7 +370,10 @@ class Vehicle():
         """
         attributes = baseline.get_attributes(base_identifier)
         for key, value in overrides.items():
-            attributes[key] = str(value)
+            if value is None:
+                attributes.pop(key, None)
+            else:
+                attributes[key] = str(value)
         return cls(new_identifier, attributes)
 
     def get_vehicles():
@@ -492,12 +504,18 @@ class InfantryType():
             another custom type already in `baseline`): start from
             base_identifier's complete stat block and apply only the given
             overrides, leaving every other field exactly as the base has it.
+            An override value of None deletes that field entirely instead
+            of setting it -- useful when the base has a field that
+            shouldn't carry over at all (not even as an empty/off value).
 
             baseline: a rules.RulesBaseline (e.g. RulesBaseline.from_tib_preset(...))
         """
         attributes = baseline.get_attributes(base_identifier)
         for key, value in overrides.items():
-            attributes[key] = str(value)
+            if value is None:
+                attributes.pop(key, None)
+            else:
+                attributes[key] = str(value)
         return cls(new_identifier, attributes)
 
     def get_infantry_types():

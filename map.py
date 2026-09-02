@@ -120,6 +120,35 @@ class Map():
         return self.infantry
     def add_entity(self, entity: Serializable):
         self.entities.append(entity)
+    def override_entity(self, identifier: str, **fields):
+        """
+            In-place-override a standard/vanilla identifier's section (a
+            weapon, warhead, or any other generic entity -- not a Building/
+            Vehicle/InfantryType, use *_type.from_base for those): merges
+            `fields` onto whatever this map already has for `identifier`
+            (an empty dict if nothing yet), rather than replacing the
+            section outright. A field value of None deletes that field
+            instead of setting it, same convention as *_type.from_base.
+
+            Merging (not replacing) matters the moment `identifier` already
+            has a hand-authored override with fields this call doesn't
+            mention -- a wholesale replace would silently drop them. Real
+            case this guards against: this project's own map had an
+            existing [GAPILE] override (TechLevel=-1, Unsellable=yes,
+            Capturable=no, ...); a naive replace-only helper used here
+            first nearly wiped all of that while only meaning to fix its
+            Factory field.
+        """
+        existing = next((e for e in self.entities if e.get_header() == identifier), None)
+        attributes = dict(existing.attributes) if existing else {}
+        for key, value in fields.items():
+            if value is None:
+                attributes.pop(key, None)
+            else:
+                attributes[key] = value
+        self.entities = [e for e in self.entities if e.get_header() != identifier]
+        self.add_entity(Serializable(attributes, identifier))
+        return self.entities[-1]
     def add_trigger(self, trigger: Trigger):
         self.triggers.append(trigger)
     def remove_trigger(self, trigger: Trigger):

@@ -172,6 +172,25 @@ be `Name:SOMEKEY` (a literal `Name:` prefix on a CSF string-table key), not
 a bare value. `UIName=KIM` instead of `UIName=Name:KIM` is exactly the kind
 of half-finished edit that shows up in-game as `Missing: 'KIM'`.
 
+**To make or edit an in-place override (type 2, or any other generic
+entity -- a weapon, a warhead), use `Map.override_entity(identifier,
+**fields)`, not a hand-rolled remove-then-`add_entity`:**
+
+```python
+m.override_entity("GAPILE", Factory="InfantryType")   # sets/overwrites just this field
+m.override_entity("SomeWeapon", Burst=None)            # None deletes a field entirely
+```
+
+It **merges** `fields` onto whatever the map already has for that
+identifier (empty dict if nothing yet) rather than replacing the section
+outright -- this matters the moment the identifier already has a
+hand-authored override with fields your call doesn't mention. A real case
+this guards against: a map's `[GAPILE]` override already carried
+`TechLevel=-1`/`Unsellable=yes`/`Capturable=no`/etc.; a naive
+replace-the-whole-section fix aimed at just its `Factory` field would have
+silently dropped all of that. Don't write your own remove-then-`add_entity`
+loop for this -- it's easy to get the merge step wrong exactly this way.
+
 ## Reading TibEd `.tib` presets
 
 `.tib` files are TibEd's own container format, but the payload is plain:
@@ -268,7 +287,7 @@ is the bug.
 
 | File | What's in it |
 |---|---|
-| `map.py` | `Map`, `verify_round_trip(m)`, `_reset_global_registries()` (called every `Map()` -- see below) |
+| `map.py` | `Map`, `Map.override_entity(identifier, **fields)`, `verify_round_trip(m)`, `_reset_global_registries()` (called every `Map()` -- see below) |
 | `mapio.py` | `MapIO` -- the actual line-by-line parser/serializer |
 | `entities.py` | `Structure`/`Unit`/`Infantry` (placed), `Building`/`Vehicle`/`InfantryType` + their `*Types` registries |
 | `logic.py` | `Trigger`, `Event`, `Action`, `Tag`, `Team`, `TaskForce`, `Script`/`ScriptItem` |
@@ -304,3 +323,21 @@ is the bug.
   trigger's tag ID still referenced by a structure, an empty `Owner=` on an
   unbuildable unit). Fail soft (log + leave unlinked), don't assume every
   reference resolves.
+- **A building's `Factory=` field controls what Spy-infiltrating it does**
+  (in stock YR, with no Ares extension installed -- check for that first,
+  see below). The engine picks infantry-veterancy vs. vehicle-veterancy vs.
+  the generic power-sabotage fallback based on what `Factory` says the
+  building produces (`InfantryType`/`UnitType`/etc.), not a hardcoded
+  per-building special case. A blanked-out `Factory=` (e.g. a map
+  repurposing a barracks as a static objective) silently degrades every
+  infiltration of it to the generic blackout effect -- confirmed exactly
+  this way on this project's own `GAPILE` override.
+- **Check whether Ares (the common RA2/YR engine-extension DLL) is
+  installed before trusting any Ares-specific rules.ini syntax/behavior
+  found while researching a mechanic.** Ares adds its own flags for things
+  like fine-grained Spy-infiltration effects that don't apply to a stock
+  install. Quick check: `find` the game directory for `*ares*`/`*syringe*`/
+  `*phobos*` files, and `strings -a` the installed `.mix` ruleset for
+  Ares-only keys (e.g. anything under `SpyEffect.*`) -- if both come up
+  empty, it's stock engine logic driving the behavior, not a missing Ares
+  flag.
