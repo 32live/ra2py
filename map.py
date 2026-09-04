@@ -123,10 +123,9 @@ class Map():
     def override_entity(self, identifier: str, **fields):
         """
             In-place-override a standard/vanilla identifier's section (a
-            weapon, warhead, or any other generic entity -- not a Building/
-            Vehicle/InfantryType, use *_type.from_base for those): merges
-            `fields` onto whatever this map already has for `identifier`
-            (an empty dict if nothing yet), rather than replacing the
+            weapon, warhead, generic entity, OR a declared custom Building/
+            Vehicle/InfantryType): merges `fields` onto whatever this map
+            already has for `identifier`, rather than replacing the
             section outright. A field value of None deletes that field
             instead of setting it, same convention as *_type.from_base.
 
@@ -138,7 +137,30 @@ class Map():
             Capturable=no, ...); a naive replace-only helper used here
             first nearly wiped all of that while only meaning to fix its
             Factory field.
+
+            Checks the declared-type registries (building_types/
+            vehicle_types/infantry_types) FIRST, before generic entities --
+            a declared custom type found there is mutated in place (its
+            own .attributes dict updated directly, preserving its registry
+            membership/index), never duplicated as a second, separate
+            generic entity under the same header. Doing that (this
+            method's own bug, now fixed) is exactly how this project
+            earlier silently wiped three heroes' full stat blocks down to
+            just the one field a fix touched: a second, near-empty
+            "[Name]" section written to the file collided with the real
+            declared type's own section on the next reload, and the
+            re-parse let the later one win instead of merging.
         """
+        for registry in (self.building_types, self.vehicle_types, self.infantry_types):
+            if identifier in registry.definitions:
+                obj = registry.definitions[identifier]
+                for key, value in fields.items():
+                    if value is None:
+                        obj.attributes.pop(key, None)
+                    else:
+                        obj.attributes[key] = value
+                return obj
+
         existing = next((e for e in self.entities if e.get_header() == identifier), None)
         attributes = dict(existing.attributes) if existing else {}
         for key, value in fields.items():

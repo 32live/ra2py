@@ -172,9 +172,11 @@ be `Name:SOMEKEY` (a literal `Name:` prefix on a CSF string-table key), not
 a bare value. `UIName=KIM` instead of `UIName=Name:KIM` is exactly the kind
 of half-finished edit that shows up in-game as `Missing: 'KIM'`.
 
-**To make or edit an in-place override (type 2, or any other generic
-entity -- a weapon, a warhead), use `Map.override_entity(identifier,
-**fields)`, not a hand-rolled remove-then-`add_entity`:**
+**To edit ANY existing identifier's section in place -- a generic entity
+(weapon, warhead), an in-place override of a vanilla identifier (type 2),
+OR a declared custom Building/Vehicle/InfantryType (type 1) -- use
+`Map.override_entity(identifier, **fields)`, not a hand-rolled
+remove-then-`add_entity`:**
 
 ```python
 m.override_entity("GAPILE", Factory="InfantryType")   # sets/overwrites just this field
@@ -190,6 +192,22 @@ this guards against: a map's `[GAPILE]` override already carried
 replace-the-whole-section fix aimed at just its `Factory` field would have
 silently dropped all of that. Don't write your own remove-then-`add_entity`
 loop for this -- it's easy to get the merge step wrong exactly this way.
+
+It also checks the declared-type registries first, so calling it on a
+declared custom type (e.g. a `"Desolater 2"` created via `from_base`)
+correctly updates that type's own `.attributes` in place instead of
+silently corrupting it. This was a real bug in `override_entity` itself,
+not just a hypothetical: an earlier version only ever looked in
+`map_obj.entities`, so calling it on a declared type created a second,
+separate, near-empty entity under the same header instead of touching the
+real one. Both then got serialized into the file as separate `[Name]`
+sections -- on the *next* load, the second one silently won, wiping the
+declared type down to just the one field the call had touched. This
+actually happened to three heroes in this project (each reduced to a
+single `Prerequisite` field, full stat blocks gone) before the bug was
+found and fixed -- if a declared custom type ever seems to have far fewer
+fields than it should, this is the first thing to suspect, and the fix is
+in `override_entity` now, not in how it's called.
 
 ## Reading TibEd `.tib` presets
 
@@ -229,13 +247,14 @@ one, check the other before concluding it doesn't exist.
 
 ### Checking map/preset drift directly
 
-Don't eyeball this by hand -- `rules.py` has two functions built from real
+Don't eyeball this by hand -- `rules.py` has functions built from real
 bugs found this way (a hero fully designed in a preset but never wired into
 the live map; a hero's weapon that existed in the preset but was never
-defined in the map, which crashed the game the moment it fired):
+defined in the map, which crashed the game the moment it fired; a weapon
+that resolved fine but whose own `Warhead=` didn't):
 
 ```python
-from rules import diff_declared_types, find_missing_dependencies
+from rules import diff_declared_types, find_missing_dependencies, find_required_houses
 
 baseline = RulesBaseline.from_tib_preset(TibPreset("tibet sets/Dota2.tib"))
 control = RulesBaseline.from_tib_preset(TibPreset("tibet sets/NukeArtillery.tib"))  # any unrelated preset
@@ -245,16 +264,26 @@ diff_declared_types(m, baseline)
 #               "stat_diffs": {name: {field: (map_value, baseline_value)}}}, ...}
 
 find_missing_dependencies(m, baseline, control_baseline=control)
-# {name: {field: {"identifier": str, "definition": dict_or_None}}}
+# {name: {field_path: {"identifier": str, "definition": dict_or_None}}}
+# field_path is "Primary" for a unit->weapon gap, or "Primary.Warhead" for
+# a weapon->warhead gap found one level further down the chain.
+
+find_required_houses(m)
+# {required_houses_value: [identifier, ...]}
 ```
 
 `find_missing_dependencies` walks each declared custom type's weapon-ish
 fields (`Primary`/`Secondary`/`ElitePrimary`/`EliteSecondary`/`DeathWeapon`
-by default) and flags any identifier that resolves nowhere -- **always pass
-`control_baseline`** (any preset that isn't specifically about the units
-you're checking): without it there's no way to tell a legitimately-missing
-vanilla weapon (fine, the engine already knows it) from a genuine gap. When
-`definition` comes back non-`None`, the fix is usually just
+by default) and flags any identifier that resolves nowhere, THEN walks one
+level deeper: for every weapon reference that DOES resolve, it also checks
+that weapon's own `Warhead=` field. A unit->weapon gap crashes the game the
+first time the unit fires (the original `AKMEE` bug); a weapon->warhead gap
+can be just as dangerous even when it resolves to something real -- see the
+`STALGREN`/`NukeB` gotcha below. **Always pass `control_baseline`** (any
+preset that isn't specifically about the units you're checking): without it
+there's no way to tell a legitimately-missing vanilla identifier (fine, the
+engine already knows it) from a genuine gap. When `definition` comes back
+non-`None`, the fix is usually just
 `Map.add_entity(Serializable(definition, identifier))`.
 
 `diff_declared_types` treats the *map's own* declared list as ground truth
@@ -264,6 +293,38 @@ doesn't always mean the map is wrong -- e.g. a `BuildTimeMultiplier` of
 `"0,1"` (comma) in a preset vs `"0.1"` (decimal point) in the live map is
 the map having already fixed a locale typo that was never back-ported to
 the preset. Read the diff, don't auto-apply it.
+
+`find_required_houses` scans **every** entity -- generic/in-place
+overrides and declared custom types alike -- for a `RequiredHouses` field.
+Use this, not `get_infantry_types().declarations` (or the building/vehicle
+equivalents), to answer "which houses have custom content already" --
+declarations only lists newly-declared types and silently misses in-place
+overrides of vanilla identifiers, which is exactly how three already-
+finished heroes in this project (each an in-place override, not a
+declared type) went undetected for a full session, wrongly concluding
+their houses had no hero yet.
+
+### Deriving from a base that's been customized on the live map
+
+`from_base()` (and anything that reads a `RulesBaseline`) only sees
+whatever's in that baseline's own source -- normally a `.tib` preset. If
+the base identifier you want to derive from was customized *directly on
+the live map* and that customization was never reflected back into the
+preset, deriving from the raw baseline silently regresses it back to the
+preset's stale version. Real case: this project's "Cowboy 2"/"Cowboy 3"
+needed to derive from `CLNT`'s live, hand-customized hero stats
+(`Strength`, `ElitePrimary`, etc.) -- Dota2.tib's own `CLNT` was still the
+original unmodified civilian placeholder.
+
+Patch the baseline with the live map's current state first:
+
+```python
+baseline.sync_from_map(m, "CLNT")   # baseline.sections["CLNT"] now matches the live map
+InfantryType.from_base(baseline, "CLNT", "Cowboy 2", Strength=370, ...)
+```
+
+Does nothing for an identifier the map has no entity for -- safe to call
+even when you're not sure whether the base was ever customized.
 
 ### Why a `.tib` preset and the live ruleset can legitimately disagree
 
@@ -283,6 +344,33 @@ check the installed `.mix` (via `strings -a some.mix | grep -A20
 largely uncompressed/readable) before assuming either the preset or the map
 is the bug.
 
+### Vetting a weapon/warhead before reusing it on a hero
+
+Before giving a hero a weapon or warhead that's shared with something
+else, check its `Verses=` array (11 comma-separated percentages, one per
+armor type): a **full spread** (mostly nonzero across all 11 slots) is a
+normal, general-combat-safe warhead. A **narrow spread** (all `0%` except
+2-3 slots) is a red flag -- it means the warhead was built for one
+specific, narrow use case and was never tested as a general infantry
+attack. Real case: `STALGREN` (shared `EliteSecondary` on several heroes,
+including the original Boris) had `Warhead=NukeB`, whose `Verses` is
+`0%,0%,0%,0%,0%,0%,100%,100%,100%,0%,0%` -- the actual Nuclear Missile
+superweapon's warhead, reused as a regular attack. Traced as the likely
+root cause of two separate hero crashes (Sammy Stallion and, in
+hindsight, probably the original unresolved Boris crash too) once a
+building's damaged-state transition triggered it.
+
+**Don't use a warhead's `AnimList=`/`Explosion=` animation name as a
+danger signal by itself** -- animations are shared cosmetic assets. This
+project first (wrongly) treated `AnimList=MININUKE` as proof of
+superweapon hardcoding, then found several completely ordinary,
+full-`Verses`-spread warheads (`V3EWH`, `CMISLWH`, `BlimpHE`,
+`TerrorBombWH`) using that exact same animation for an unrelated "cool
+explosion" visual. The real superweapon warhead is `[NUKE]`
+(`CellSpread=10`, `WallAbsoluteDestroyer=yes`) -- structurally distinct
+from all of these, animation aside. Judge a warhead by `Verses`, not by
+what its explosion looks like.
+
 ## File map
 
 | File | What's in it |
@@ -295,7 +383,7 @@ is the bug.
 | `houses.py` | `House` (per-faction singleton, e.g. `House.get_house("Americans")`, `House.PlayerE()`, `House.from_position(n)`) |
 | `survival.py` | `SurvivalMap`, `Wave` |
 | `tibed.py` | `TibPreset`, `TibBlock`, `parse_ini`, `diff_presets` -- `.tib` loader |
-| `rules.py` | `RulesBaseline` -- stat-block lookup for `*.from_base(...)` |
+| `rules.py` | `RulesBaseline` (+ `.sync_from_map()`) -- stat-block lookup for `*.from_base(...)`; `diff_declared_types`, `find_missing_dependencies`, `find_required_houses` -- map/preset drift checkers |
 | `factories.py` | `GlobalTriggers` -- a couple of reusable trigger factories (small, thin) |
 | `actions.py` | `RA2Actions` -- static reference table of action-type IDs/args, documentation only |
 
